@@ -3,7 +3,7 @@ library(visreg)
 library(lmerTest)
 library(car)
 
-# pref data example -------------------------------------------------------
+# fitting mixed effect models -------------------------------------------------------
 
 pref <- read.csv("prefdata.csv")
 
@@ -49,7 +49,7 @@ plot(resid(me3)~fitted(me3))
 Anova(me3)
 VarCorr(me3)
 
-# mouse -------
+# individual level variaion -------
 
 mouse <- read.csv("wildmousemetabolism.csv")
   mouse$id <- as.factor(mouse$id)
@@ -183,4 +183,163 @@ litter$combotrt <- paste(litter$herbicide, litter$profile, sep='-')
   AIC(litter_mod2, litter_mod3, litter_mod4)
   #combo trt (interaction) is the best model
   
-#repeated measurements--------------
+# repeated measurements--------------
+
+hfe <- read.csv('HFEIFbytree.csv')
+with(hfe, table(Date, plotnr))  
+#unbalance, didnt measure every tree every time
+library(lubridate)
+hfe$Date <- mdy(hfe$Date)
+hfe$plotnr <- as.factor(hfe$plotnr)
+#days since start
+hfe$time <- as.numeric(with(hfe, Date - max(Date)))
+
+
+#pick last date (may be the end of the experiment)
+hfe_last <- subset(hfe, Date == max(Date))
+
+library(doBy)
+hfe_last_plot <- summaryBy(.~Date + plotnr, data=hfe_last, FUN=mean,
+                           na.rm=TRUE, id=~treat, keep.names = TRUE)
+
+lm_last <- lm(height~treat, data=hfe_last_plot)
+library(car)
+Anova(lm_last)
+library(visreg)
+visreg(lm_last, "treat", xlab="Treatment", ylab="Tree height (m)")
+
+library(multcomp)
+summary(glht(lm_last, linfct=mcp(treat='Tukey')))
+
+library(lme4)
+lmeif1 <- lmer(height ~ treat + time + (1|plotnr), data=hfe)
+library(lmerTest)
+Anova(lmeif1) 
+
+lmeif2 <- lmer(height ~ treat * time + (1|plotnr), data=hfe)
+Anova(lmeif2)
+
+visreg(lmeif2, "time", by="treat", overlay=TRUE)
+
+anova(lmeif1, lmeif2)
+#test model with and without interaction, interactione is very sig
+
+summary(lmeif2)$coefficients
+#interactions are important and meaningful (treatF:time is not, others are)
+
+
+
+###photosynthesis FACE
+
+photo <- read.csv("eucface_gasexchange.csv")
+
+#there are not many dates and we wont to see diffs between dates so use as factor
+photo_mod <- lmer(Photo ~ Date + CO2 + (1|Ring/Tree), data = photo)
+Anova(photo_mod, test="F")
+#rings as experimental unit with Trees within Ring #hierarchy
+photo_mod2 <- lmer(Photo ~ Date * CO2 + (1|Ring/Tree), data = photo)
+Anova(photo_mod2, test="F")
+ 
+ #test for the significant of the interaction
+ pbkrtest::KRmodcomp(photo_mod, photo_mod2)
+ 
+ photo_mod3 <- lmer(Photo ~ Date + Date:CO2 -1 + (1|Ring/Tree), data = photo)
+ summary(photo_mod3)
+ #Cos effect on each date, dateB and CO2 effect is not sig
+ 
+library(multcomp)
+AIC(photo_mod2, photo_mod3)
+#althought the model is the same it represents the coefficients very differently
+summary(photo_mod3)$coefficients
+ 
+#individual comparisons
+summary(glht(photo_mod3, linfct=c("DateA:CO2Ele=0",
+                                  "DateB:CO2Ele=0",
+                                  "DateC:CO2Ele=0",
+                                  "DateD:CO2Ele=0")))
+ 
+summary(glht(photo_mod3, linfct="DateB:CO2Ele- DateC:CO2Ele = 0"))
+
+
+
+# logistic regresssion poisson ---------------------------------------------------------
+cover <- read.csv("eucfaceGC.csv")
+  cover$Ring <- as.factor(paste(cover$Ring, cover$Trt, sep="-"))
+  cover$Plot <- as.factor(cover$Plot)
+  cover$Sub <- as.factor(cover$Sub)
+
+lattice::xyplot(Forbes~Date|Ring, groups=Plot, data=cover, pch=16, 
+                jitter.x=T)
+#since this is count data we will need to choose a distribution (usually Poisson)
+#compare some models with different distributions
+forb.norm <- lmer(Forbes~Date*Trt+(1|Ring/Plot/Sub), data=cover)
+forb.pois <- glmer(Forbes~Date*Trt+(1|Ring/Plot/Sub), family=poisson,
+                   data=cover)
+forb.pois.sqrt <- glmer(Forbes~Date*Trt+(1|Ring/Plot/Sub),
+                        family=poisson('sqrt'),
+                        data=cover)
+
+#compare model diagnostics
+library(gridExtra)
+p1 <- plot(forb.norm, main="Normal") #gaussian distribution
+p2 <- plot(forb.pois, main="Poisson (log-link)")
+p3 <- plot(forb.pois.sqrt, main="Poisson (sqrt-link)")
+grid.arrange(p1,p2,p3, ncols=3) #doesnt work
+
+#residuals improve with Poisson distributions, but only visually
+
+library(DHARMa)
+r <- simulateResiduals(forb.pois.sqrt)
+plotSimulatedResiduals(r)
+#for count data a large # of zeros can results in overdispersion
+#test residual deviance to degrees of freedom ~1
+sum(resid(forb.pois.sqrt, type='pearson')^2)
+df.residual(forb.pois.sqrt)
+
+#or include individual level random effects in the model to alleviate overdisp
+cover$Ind <- as.factor(1:nrow(cover))
+
+forb.pois.ind <- glmer(Forbes~Date*Trt+(1|Ring/Plot/Sub/Ind),
+                        family=poisson('sqrt'),data=cover)
+VarCorr(forb.pois.ind)
+car::Anova(forb.pois.ind)
+#look at interaction
+
+visreg(forb.pois.ind, "Date", "Trt", overlay=TRUE)
+visreg(forb.pois.ind, "Trt", "Date", overlay=TRUE)
+
+#quesions:
+#do forbs decrease in freq between dates but not elevated co2 (visreg)
+#forb was lower in control but only on 2nd date
+
+#test this with unqiue new factor level combos as with above example
+#then run new glmer models comparing trt models with models with one main effect
+
+
+
+# logistic regression binomial ----------------------------------
+
+water <- read.csv("germination_water.csv")
+plot(germ/n ~ jitter(water.potential), data=water, col=species, pch=16) #not germinated
+
+fitwater <- glmer(cbind(germ, n-germ) ~ species + water.potential + 
+                  (1|site), data=water, family=binomial)
+fitwater2 <- glmer(cbind(germ, n-germ) ~ species * water.potential + 
+                    (1|site), data=water, family=binomial)
+anova(fitwater, fitwater2)
+
+#using summary will be difficult because coeffs are transformed prob
+#use visreg and scale = response to see probs
+visreg(fitwater2, 'water.potential', by='species', overlay=T, scale='response')
+
+#redo with data
+visreg(fitwater2, 'water.potential', by='species', overlay=T, 
+       scale='response', rug=FALSE, legend=FALSE, 
+       line.par=list(col=topo.colors(4)),
+       ylab='P(Germination)')
+
+points(germ/n ~ jitter(water.potential), pch=19, 
+       col=topo.colors(4)[species], data=water)
+
+
+
